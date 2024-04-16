@@ -36,6 +36,8 @@ class LikelihoodField {
     /// 使用高斯牛顿法配准
     bool AlignGaussNewton(SE2& init_pose);
 
+    void DegradationDetectionByLine(Scan2d::Ptr scan);
+
     /**
      * 使用g2o配准
      * @param init_pose 初始位姿 NOTE 使用submap时，给定相对于该submap的位姿，估计结果也是针对于这个submap的位姿

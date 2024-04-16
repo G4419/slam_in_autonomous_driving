@@ -17,6 +17,12 @@
 #include <g2o/solvers/cholmod/linear_solver_cholmod.h>
 #include <g2o/solvers/dense/linear_solver_dense.h>
 
+#include <pcl/point_types.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
+
 namespace sad {
 
 void LikelihoodField::SetTargetScan(Scan2d::Ptr scan) {
@@ -57,6 +63,57 @@ void LikelihoodField::BuildModel() {
 
 void LikelihoodField::SetSourceScan(Scan2d::Ptr scan) { source_ = scan; }
 
+//2d ransac好像有些问题，改用3d
+void LikelihoodField::DegradationDetectionByLine(Scan2d::Ptr scan){
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    cloud->points.resize(scan->ranges.size());
+    for (size_t i = 0; i < source_->ranges.size(); ++i) {
+            float r = source_->ranges[i];
+            float angle = source_->angle_min + i * source_->angle_increment;
+            if (r < source_->range_min || r > source_->range_max ||
+                angle < source_->angle_min + 30 * M_PI / 180.0 || angle > source_->angle_max - 30 * M_PI / 180.0) {
+                cloud->points[i].x = cloud->points[i].y = cloud->points[i].z = std::numeric_limits<float>::quiet_NaN();
+                continue;
+            }
+            cloud->points[i].x = r * std::cos(angle);
+            cloud->points[i].y = r * std::sin(angle);
+            cloud->points[i].z = 0;
+    }
+
+    pcl::ModelCoefficients::Ptr coefficients1(new pcl::ModelCoefficients);
+    pcl::ModelCoefficients::Ptr coefficients2(new pcl::ModelCoefficients);
+    pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+
+    // 创建一个Sample Consensus模型，并设置模型类型为线模型
+    pcl::SACSegmentation<pcl::PointXYZ> seg;
+    seg.setOptimizeCoefficients(true);
+    seg.setModelType(pcl::SACMODEL_LINE);
+    seg.setMethodType(pcl::SAC_RANSAC);
+    seg.setDistanceThreshold(0.01);  // 设置RANSAC算法的距离阈值
+    seg.setInputCloud(cloud);
+    seg.segment(*inliers, *coefficients1);
+
+    // 使用ExtractIndices来提取除去直线点之外的点云
+    pcl::PointCloud<pcl::PointXYZ>::Ptr outlier_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::ExtractIndices<pcl::PointXYZ> extract;
+    extract.setInputCloud(cloud);
+    extract.setIndices(inliers);
+    extract.setNegative(true);  // 设置为提取负例，即不属于内点的点
+    extract.filter(*outlier_cloud);
+
+    seg.setInputCloud(outlier_cloud);
+    seg.segment(*inliers, *coefficients2);
+
+    Vec3f norm1(coefficients1->values[0], coefficients1->values[1], coefficients1->values[2]);
+    Vec3f norm2(coefficients2->values[0], coefficients2->values[1], coefficients2->values[2]);
+
+    if (norm1.cross(norm2).norm() < 1e-5)
+    {
+        LOG(INFO) <<  "DegradationDetection!!!";
+    }
+
+}
+
 bool LikelihoodField::AlignGaussNewton(SE2& init_pose) {
     int iterations = 10;
     double cost = 0, lastCost = 0;
@@ -65,6 +122,8 @@ bool LikelihoodField::AlignGaussNewton(SE2& init_pose) {
     const int image_boarder = 20;   // 预留图像边界
 
     has_outside_pts_ = false;
+    DegradationDetectionByLine(source_);
+
     for (int iter = 0; iter < iterations; ++iter) {
         Mat3d H = Mat3d::Zero();
         Vec3d b = Vec3d::Zero();
@@ -87,23 +146,29 @@ bool LikelihoodField::AlignGaussNewton(SE2& init_pose) {
             float theta = current_pose.so2().log();
             Vec2d pw = current_pose * Vec2d(r * std::cos(angle), r * std::sin(angle));
 
+
             // 在field中的图像坐标
-            Vec2i pf = (pw * resolution_ + Vec2d(500, 500)).cast<int>();
+            //使用math_utils.h中的双线性插值函数
+            // Vec2i pf = (pw * resolution_ + Vec2d(500, 500)).cast<int>();
+            Vec2d pf = pw * resolution_ + Vec2d(500, 500);
 
             if (pf[0] >= image_boarder && pf[0] < field_.cols - image_boarder && pf[1] >= image_boarder &&
                 pf[1] < field_.rows - image_boarder) {
                 effective_num++;
 
                 // 图像梯度
-                float dx = 0.5 * (field_.at<float>(pf[1], pf[0] + 1) - field_.at<float>(pf[1], pf[0] - 1));
-                float dy = 0.5 * (field_.at<float>(pf[1] + 1, pf[0]) - field_.at<float>(pf[1] - 1, pf[0]));
+                // float dx = 0.5 * (field_.at<float>(pf[1], pf[0] + 1) - field_.at<float>(pf[1], pf[0] - 1));
+                // float dy = 0.5 * (field_.at<float>(pf[1] + 1, pf[0]) - field_.at<float>(pf[1] - 1, pf[0]));
+                float dx = 0.5 * (math::GetPixelValue<float>(field_, pf[0], pf[1] + 1) - math::GetPixelValue<float>(field_, pf[0], pf[1] - 1));
+                float dy = 0.5 * (math::GetPixelValue<float>(field_, pf[0] + 1, pf[1]) - math::GetPixelValue<float>(field_, pf[0] - 1, pf[1]));
 
                 Vec3d J;
                 J << resolution_ * dx, resolution_ * dy,
                     -resolution_ * dx * r * std::sin(angle + theta) + resolution_ * dy * r * std::cos(angle + theta);
                 H += J * J.transpose();
 
-                float e = field_.at<float>(pf[1], pf[0]);
+                // float e = field_.at<float>(pf[1], pf[0]);
+                float e = math::GetPixelValue<float>(field_, pf[0], pf[1]);
                 b += -J * e;
 
                 cost += e * e;
@@ -127,7 +192,7 @@ bool LikelihoodField::AlignGaussNewton(SE2& init_pose) {
             break;
         }
 
-        LOG(INFO) << "iter " << iter << " cost = " << cost << ", effect num: " << effective_num;
+        // LOG(INFO) << "iter " << iter << " cost = " << cost << ", effect num: " << effective_num;
 
         current_pose.translation() += dx.head<2>();
         current_pose.so2() = current_pose.so2() * SO2::exp(dx[2]);
