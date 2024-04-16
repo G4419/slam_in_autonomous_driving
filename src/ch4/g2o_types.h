@@ -23,6 +23,7 @@ namespace sad {
  * 观测量为9维，即预积分残差, 顺序：R, v, p
  * information从预积分类中获取，构造函数中计算
  */
+//多元边连连接的顶点都省了
 class EdgeInertial : public g2o::BaseMultiEdge<9, Vec9d> {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
