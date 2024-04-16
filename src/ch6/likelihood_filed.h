@@ -43,12 +43,16 @@ class LikelihoodField {
      */
     bool AlignG2O(SE2& init_pose);
 
+    bool AlignCeres(SE2& init_pose);
+
     /// 获取场函数，转换为RGB图像
     cv::Mat GetFieldImage();
 
     bool HasOutsidePoints() const { return has_outside_pts_; }
 
     void SetPose(const SE2& pose) { pose_ = pose; }
+
+    bool IsOutSide(const cv::Mat& field_image, double range, double angle, SE2& current_pose , float resolution = 10.0);
 
    private:
     void BuildModel();

@@ -26,10 +26,55 @@ class VertexSE2 : public g2o::BaseVertex<3, SE2> {
         _estimate.translation()[0] += update[0];
         _estimate.translation()[1] += update[1];
         _estimate.so2() = _estimate.so2() * SO2::exp(update[2]);
+        
     }
 
     bool read(std::istream& is) override { return true; }
     bool write(std::ostream& os) const override { return true; }
+};
+
+class EdgeSE2P2P : public g2o::BaseUnaryEdge<2, Eigen::Vector2d, VertexSE2> {
+    public: 
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+    EdgeSE2P2P(Vec2d point) : point_(point){};
+
+    void computeError() override {
+        VertexSE2* v = (VertexSE2*)_vertices[0];
+        SE2 pose = v->estimate();
+        Vec2d pw = pose * point_;
+        _error = pw - _measurement;
+
+    }
+    
+
+    bool read(std::istream& is) override { return true; }
+    bool write(std::ostream& os) const override { return true; }
+
+    private:
+    Vec2d point_;
+};
+
+class EdgeSE2P2L : public g2o::BaseUnaryEdge<1, double, VertexSE2> {
+    public: 
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+    EdgeSE2P2L(Vec2d point, Vec3d line_coeffs) : point_(point), line_coeffs_(line_coeffs){};
+
+    void computeError() override {
+        VertexSE2* v = (VertexSE2*)_vertices[0];
+        SE2 pose = v->estimate();
+        Vec2d pw = pose * point_;
+
+        _error[0] = line_coeffs_[0] * pw[0] + line_coeffs_[1] * pw[1] + line_coeffs_[2];
+
+    }
+
+    bool read(std::istream& is) override { return true; }
+    bool write(std::ostream& os) const override { return true; }
+
+    private:
+    Vec2d point_;
+    Vec3d line_coeffs_;
+
 };
 
 class EdgeSE2LikelihoodFiled : public g2o::BaseUnaryEdge<1, double, VertexSE2> {

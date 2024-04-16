@@ -3,13 +3,146 @@
 //
 
 #include "ch6/icp_2d.h"
+#include "ch6/g2o_types.h"
+#include "ch6/ceres_type.h"
 #include "common/math_utils.h"
 
 #include <glog/logging.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/search/impl/kdtree.hpp>
 
+#include <g2o/core/base_unary_edge.h>
+#include <g2o/core/block_solver.h>
+#include <g2o/core/optimization_algorithm_levenberg.h>
+#include <g2o/core/robust_kernel.h>
+#include <g2o/core/robust_kernel_impl.h>
+#include <g2o/core/sparse_optimizer.h>
+#include <g2o/solvers/cholmod/linear_solver_cholmod.h>
+#include <g2o/solvers/dense/linear_solver_dense.h>
+
+
 namespace sad {
+
+bool Icp2d::AlignG2oP2P(SE2& init_pose) {
+    int iterations = 10;
+    double cost = 0, lastCost = 0;
+    SE2 current_pose = init_pose;
+    const float max_dis2 = 0.01;    // 最近邻时的最远距离（平方）
+    const int min_effect_pts = 20;  // 最小有效点数
+    double rk_delta = 0.8;
+    //暂时理解为连接的两个顶点的维度,连接单顶点的边时第二个参数无影响，可以设置成Eigen::Dynamic，多元边可以都设置为dynamic
+    using BlockSolverType = g2o::BlockSolver<g2o::BlockSolverTraits<3, Eigen::Dynamic>>;
+    using LinearSolverType = g2o::LinearSolverCholmod<BlockSolverType::PoseMatrixType>;
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+        g2o::make_unique<BlockSolverType>(g2o::make_unique<LinearSolverType>()));
+    g2o::SparseOptimizer optimizer;
+    optimizer.setAlgorithm(solver);
+
+    auto* v = new VertexSE2();
+    
+    v->setId(0);
+    v->setEstimate(current_pose);
+    optimizer.addVertex(v);
+
+
+    int effective_num = 0;
+    for (size_t i = 0; i < source_scan_->ranges.size(); ++i) {
+        float r = source_scan_->ranges[i];
+        if (r < source_scan_->range_min || r > source_scan_->range_max) {
+            continue;
+        }
+
+        float angle = source_scan_->angle_min + i * source_scan_->angle_increment;
+        float theta = current_pose.so2().log();
+        Vec2d pw = current_pose * Vec2d(r * std::cos(angle), r * std::sin(angle));
+        Point2d pt;
+        pt.x = pw.x();
+        pt.y = pw.y();
+
+        std::vector<int> nn_idx;
+        std::vector<float> dis;
+        kdtree_.nearestKSearch(pt, 1, nn_idx, dis);
+
+        if (nn_idx.size() > 0 && dis[0] < max_dis2) {
+            effective_num++;
+            auto e = new EdgeSE2P2P(pw);
+            e->setVertex(0, v);
+            e->setMeasurement(Vec2d(target_cloud_->points[nn_idx[0]].x, target_cloud_->points[nn_idx[0]].y));
+            e->setInformation(Mat2d::Identity());//必需
+            auto rk = new g2o::RobustKernelHuber();
+            rk->setDelta(rk_delta);
+            e->setRobustKernel(rk);
+            optimizer.addEdge(e);
+        }
+    }
+    if(effective_num < min_effect_pts) return false;
+
+    optimizer.setVerbose(false);
+    optimizer.initializeOptimization();
+    optimizer.optimize(iterations);
+
+    init_pose = v->estimate();
+    LOG(INFO) << "estimated pose: " << init_pose.translation().transpose()
+              << ", theta: " << init_pose.so2().log();
+
+    return true;
+}
+
+bool Icp2d::AlignCeresP2P(SE2& init_pose) {
+    int iterations = 10;
+    double cost = 0, lastCost = 0;
+    SE2 current_pose = init_pose;
+    const float max_dis2 = 0.01;    // 最近邻时的最远距离（平方）
+    const int min_effect_pts = 20;  // 最小有效点数
+    double rk_delta = 0.8;
+
+    ceres::Problem problem;
+    double* pose =  current_pose.data();
+    // LOG(INFO) << "pose value:" << pose[0] << " " << pose[1] << " " << pose[2];
+    
+
+    int effective_num = 0;
+    for (size_t i = 0; i < source_scan_->ranges.size(); ++i) {
+        float r = source_scan_->ranges[i];
+        if (r < source_scan_->range_min || r > source_scan_->range_max) {
+            continue;
+        }
+
+        float angle = source_scan_->angle_min + i * source_scan_->angle_increment;
+        float theta = current_pose.so2().log();
+        Vec2d pw = current_pose * Vec2d(r * std::cos(angle), r * std::sin(angle));
+        Point2d pt;
+        pt.x = pw.x();
+        pt.y = pw.y();
+
+        std::vector<int> nn_idx;
+        std::vector<float> dis;
+        kdtree_.nearestKSearch(pt, 1, nn_idx, dis);
+
+        if (nn_idx.size() > 0 && dis[0] < max_dis2) {
+            effective_num++;
+            problem.AddResidualBlock(ceres_optimazion::CreateP2PCostFunction(pw, Vec2d(target_cloud_->points[nn_idx[0]].x, target_cloud_->points[nn_idx[0]].y)),
+                new ceres::HuberLoss(rk_delta), pose);
+        }
+    }
+    if(effective_num < min_effect_pts) return false;
+    ceres::Solver::Options options;
+    options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+    options.max_num_iterations = iterations;
+    options.num_threads = 16;
+    options.minimizer_progress_to_stdout = false;
+
+    ceres::Solver::Summary summary;
+    ceres::Solve(options, &problem, &summary);
+
+    init_pose = Sophus::SE2d::exp(Vec3d(pose[0], pose[1], pose[2]));
+
+
+    LOG(INFO) << "estimated pose: " << init_pose.translation().transpose()
+              << ", theta: " << init_pose.so2().log();
+
+    return true;
+}
 
 bool Icp2d::AlignGaussNewton(SE2& init_pose) {
     int iterations = 10;
@@ -82,6 +215,87 @@ bool Icp2d::AlignGaussNewton(SE2& init_pose) {
     init_pose = current_pose;
     LOG(INFO) << "estimated pose: " << current_pose.translation().transpose()
               << ", theta: " << current_pose.so2().log();
+
+    return true;
+}
+
+bool Icp2d::AlignG2oP2L(SE2& init_pose){
+    int iterations = 10;
+    double cost = 0, lastCost = 0;
+    SE2 current_pose = init_pose;
+    const float max_dis = 0.3;    // 最近邻时的最远距离（平方）
+    const int min_effect_pts = 20;  // 最小有效点数
+    double rk_delta = 0.8;
+    //暂时理解为连接的两个顶点的维度,连接单顶点的边时第二个参数无影响，可以设置成Eigen::Dynamic，多元边可以都设置为dynamic
+    using BlockSolverType = g2o::BlockSolver<g2o::BlockSolverTraits<3, Eigen::Dynamic>>;
+    using LinearSolverType = g2o::LinearSolverCholmod<BlockSolverType::PoseMatrixType>;
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+        g2o::make_unique<BlockSolverType>(g2o::make_unique<LinearSolverType>()));
+    g2o::SparseOptimizer optimizer;
+    optimizer.setAlgorithm(solver);
+
+    auto* v = new VertexSE2();
+    
+    v->setId(0);
+    v->setEstimate(current_pose);
+    optimizer.addVertex(v);
+
+
+    int effective_num = 0;
+    for (size_t i = 0; i < source_scan_->ranges.size(); ++i) {
+        float r = source_scan_->ranges[i];
+        if (r < source_scan_->range_min || r > source_scan_->range_max) {
+            continue;
+        }
+
+        float angle = source_scan_->angle_min + i * source_scan_->angle_increment;
+        float theta = current_pose.so2().log();
+        Vec2d pw = current_pose * Vec2d(r * std::cos(angle), r * std::sin(angle));
+        Point2d pt;
+        pt.x = pw.x();
+        pt.y = pw.y();
+
+        // 查找5个最近邻
+        std::vector<int> nn_idx;
+        std::vector<float> dis;
+        kdtree_.nearestKSearch(pt, 5, nn_idx, dis);
+
+        std::vector<Vec2d> effective_pts;  // 有效点
+        for (int j = 0; j < nn_idx.size(); ++j) {
+            if (dis[j] < max_dis) {
+                effective_pts.emplace_back(
+                    Vec2d(target_cloud_->points[nn_idx[j]].x, target_cloud_->points[nn_idx[j]].y));
+            }
+        }
+
+        if (effective_pts.size() < 3) {
+            continue;
+        }
+
+        // 拟合直线，添加edge
+        Vec3d line_coeffs;
+        if (math::FitLine2D(effective_pts, line_coeffs)) {
+            effective_num++;
+
+            auto e = new EdgeSE2P2L(pw, line_coeffs);
+            e->setVertex(0, v);
+            e->setInformation(Eigen::Matrix<double, 1, 1>::Identity());//必需
+            auto rk = new g2o::RobustKernelHuber();
+            rk->setDelta(rk_delta);
+            e->setRobustKernel(rk);
+            optimizer.addEdge(e);
+        }
+
+    }
+    if(effective_num < min_effect_pts) return false;
+
+    optimizer.setVerbose(false);
+    optimizer.initializeOptimization();
+    optimizer.optimize(iterations);
+
+    init_pose = v->estimate();
+    LOG(INFO) << "estimated pose: " << init_pose.translation().transpose()
+              << ", theta: " << init_pose.so2().log();
 
     return true;
 }

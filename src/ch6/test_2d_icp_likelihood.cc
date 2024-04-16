@@ -44,6 +44,8 @@ int main(int argc, char** argv) {
                     lf.AlignGaussNewton(pose);
                 } else if (FLAGS_method == "g2o") {
                     lf.AlignG2O(pose);
+                } else if (FLAGS_method == "ceres") {
+                    lf.AlignCeres(pose);
                 }
 
                 LOG(INFO) << "aligned pose: " << pose.translation().transpose() << ", " << pose.so2().log();

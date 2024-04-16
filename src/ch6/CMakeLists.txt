@@ -1,3 +1,4 @@
+find_package(Ceres REQUIRED)
 add_library(${PROJECT_NAME}.ch6
         icp_2d.cc
         lidar_2d_utils.cc
@@ -8,11 +9,13 @@ add_library(${PROJECT_NAME}.ch6
         multi_resolution_likelihood_field.cc
         loop_closing.cc
         frame.cc
+        ceres_type.h
         )
 
 target_link_libraries(${PROJECT_NAME}.ch6
         ${PCL_LIBRARIES}
         ${PROJECT_NAME}.common
+        ${CERES_LIBRARIES}
         )
 
 add_executable(test_2dlidar_io

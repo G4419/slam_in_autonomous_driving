@@ -4,6 +4,7 @@
 
 #include "ch6/g2o_types.h"
 #include "ch6/likelihood_filed.h"
+#include "ch6/ceres_type.h"
 
 #include <glog/logging.h>
 
@@ -148,6 +149,72 @@ cv::Mat LikelihoodField::GetFieldImage() {
 
     return image;
 }
+
+bool LikelihoodField::IsOutSide(const cv::Mat& field_image, double range, double angle , SE2& current_pose, float resolution){
+    Vec2d pw = current_pose * Vec2d(range * std::cos(angle), range * std::sin(angle));
+    Vec2i pf = (pw * resolution_ + Vec2d(field_image.rows / 2, field_image.cols / 2)).cast<int>();  // 图像坐标
+    const int image_boarder = 10;
+
+    if (pf[0] >= image_boarder && pf[0] < field_image.cols - image_boarder && pf[1] >= image_boarder &&
+        pf[1] < field_image.rows - image_boarder) {
+        return false;
+    } else {
+        return true;
+    }
+}
+
+bool LikelihoodField::AlignCeres(SE2& init_pose) {
+    const double range_th = 15.0;  // 不考虑太远的scan，不准
+    const double rk_delta = 0.8;
+    SE2 current_pose = init_pose;
+    double* pose =  current_pose.data();
+    has_outside_pts_ = false;
+    ceres::Problem problem;
+
+        // 遍历source
+    for (size_t i = 0; i < source_->ranges.size(); ++i) {
+        float r = source_->ranges[i];
+        if (r < source_->range_min || r > source_->range_max) {
+            continue;
+        }
+
+        if (r > range_th) {
+            continue;
+        }
+
+        float angle = source_->angle_min + i * source_->angle_increment;
+        if (angle < source_->angle_min + 30 * M_PI / 180.0 || angle > source_->angle_max - 30 * M_PI / 180.0) {
+            continue;
+        }
+
+        if (IsOutSide(field_, r, angle, init_pose, resolution_))
+        {
+            has_outside_pts_ = true;
+            continue;
+        }
+
+        problem.AddResidualBlock(ceres_optimazion::CreateLikelihoodCostFunction(field_, r, angle, resolution_),
+                new ceres::HuberLoss(rk_delta), pose);
+        
+    }
+    ceres::Solver::Options options;
+    options.max_num_iterations = 10;
+    options.num_threads = 16;
+    options.minimizer_progress_to_stdout = true;
+
+    ceres::Solver::Summary summary;
+    ceres::Solve(options, &problem, &summary);
+
+    init_pose = Sophus::SE2d::exp(Vec3d(pose[0], pose[1], pose[2]));
+
+
+    LOG(INFO) << "estimated pose: " << init_pose.translation().transpose()
+              << ", theta: " << init_pose.so2().log();
+
+    return true;
+    
+}
+
 
 bool LikelihoodField::AlignG2O(SE2& init_pose) {
     using BlockSolverType = g2o::BlockSolver<g2o::BlockSolverTraits<3, 1>>;
