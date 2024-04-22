@@ -8,6 +8,7 @@
 #include "ch3/eskf.hpp"
 #include "ch3/static_imu_init.h"
 #include "ch7/incremental_ndt_lo.h"
+#include "ch7/icp_3d.h"
 #include "ch7/loosely_coupled_lio/cloud_convert.h"
 #include "ch7/loosely_coupled_lio/measure_sync.h"
 
@@ -72,6 +73,11 @@ class LooselyLIO {
     std::shared_ptr<MessageSync> sync_ = nullptr;  // 消息同步器
     StaticIMUInit imu_init_;                       // IMU静止初始化
     std::shared_ptr<sad::IncrementalNDTLO> inc_ndt_lo_ = nullptr;
+
+    std::shared_ptr<sad::Icp3d> icp_lo = nullptr;
+
+    CloudPtr local_map_ = nullptr;
+
 
     /// point clouds data
     FullCloudPtr scan_undistort_{new FullPointCloudType()};  // scan after undistortion

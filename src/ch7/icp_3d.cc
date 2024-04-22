@@ -6,6 +6,7 @@
 #include "common/math_utils.h"
 
 #include <execution>
+#include <numeric>
 
 namespace sad {
 
@@ -66,19 +67,63 @@ bool Icp3d::AlignP2P(SE3& init_pose) {
         // 原则上可以用reduce并发，写起来比较麻烦，这里写成accumulate
         double total_res = 0;
         int effective_num = 0;
-        auto H_and_err = std::accumulate(
-            index.begin(), index.end(), std::pair<Mat6d, Vec6d>(Mat6d::Zero(), Vec6d::Zero()),
-            [&jacobians, &errors, &effect_pts, &total_res, &effective_num](const std::pair<Mat6d, Vec6d>& pre,
-                                                                           int idx) -> std::pair<Mat6d, Vec6d> {
-                if (!effect_pts[idx]) {
-                    return pre;
-                } else {
-                    total_res += errors[idx].dot(errors[idx]);
-                    effective_num++;
-                    return std::pair<Mat6d, Vec6d>(pre.first + jacobians[idx].transpose() * jacobians[idx],
-                                                   pre.second - jacobians[idx].transpose() * errors[idx]);
-                }
+
+        // template<class InputIt, class T, class BinaryOperation>
+        // constexpr // since C++20
+        // T accumulate(InputIt first, InputIt last, T init, BinaryOperation op)
+        // {
+        //     for (; first != last; ++first)
+        //         init = op(std::move(init), *first); // std::move since C++20
+        
+        //     return init;
+        // }
+
+        //reduce函数使用lambda函数的两个值需要为同一类型
+        //可能是计算量太小，速度并没有提升
+        std::vector<std::pair<Mat6d, Vec6d>> H_and_err_vector;
+        H_and_err_vector.resize(index.size());
+        // for(auto idx : index){
+        //     if (effect_pts[idx])
+        //     {
+        //         effective_num++;
+        //         total_res += errors[idx].dot(errors[idx]);
+        //         H_and_err_vector.push_back(std::pair<Mat6d, Vec6d>(jacobians[idx].transpose() * jacobians[idx], 
+        //         -jacobians[idx].transpose() * errors[idx]));
+        //         // H_and_err_vector[idx] = std::pair<Mat6d, Vec6d>(jacobians[idx].transpose() * jacobians[idx], 
+        //         // -jacobians[idx].transpose() * errors[idx]);
+        //     }
+        // }
+        std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](int idx) {
+            if (effect_pts[idx])
+            {
+                effective_num++;
+                total_res += errors[idx].dot(errors[idx]);
+                H_and_err_vector[idx] = std::pair<Mat6d, Vec6d>(jacobians[idx].transpose() * jacobians[idx], 
+                -jacobians[idx].transpose() * errors[idx]);
+            }
+        });
+
+        auto H_and_err = std::reduce(
+            H_and_err_vector.begin(), H_and_err_vector.end(), std::pair<Mat6d, Vec6d>(Mat6d::Zero(), Vec6d::Zero()),
+            [](const std::pair<Mat6d, Vec6d>& pre, const std::pair<Mat6d, Vec6d>& cur) -> std::pair<Mat6d, Vec6d> {
+
+                return std::pair<Mat6d, Vec6d>(pre.first + cur.first, pre.second + cur.second);
+
             });
+
+        // auto H_and_err = std::accumulate(
+        //     index.begin(), index.end(), std::pair<Mat6d, Vec6d>(Mat6d::Zero(), Vec6d::Zero()),
+        //     [&jacobians, &errors, &effect_pts, &total_res, &effective_num](const std::pair<Mat6d, Vec6d>& pre,
+        //                                                                    int idx) -> std::pair<Mat6d, Vec6d> {
+        //         if (!effect_pts[idx]) {
+        //             return pre;
+        //         } else {
+        //             total_res += errors[idx].dot(errors[idx]);
+        //             effective_num++;
+        //             return std::pair<Mat6d, Vec6d>(pre.first + jacobians[idx].transpose() * jacobians[idx],
+        //                                            pre.second - jacobians[idx].transpose() * errors[idx]);
+        //         }
+        //     });
 
         if (effective_num < options_.min_effective_pts_) {
             LOG(WARNING) << "effective num too small: " << effective_num;
@@ -112,7 +157,7 @@ bool Icp3d::AlignP2P(SE3& init_pose) {
 }
 
 bool Icp3d::AlignP2Plane(SE3& init_pose) {
-    LOG(INFO) << "aligning with point to plane";
+    // LOG(INFO) << "aligning with point to plane";
     assert(target_ != nullptr && source_ != nullptr);
     // 整体流程与p2p一致，读者请关注变化部分
 

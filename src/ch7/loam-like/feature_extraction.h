@@ -42,6 +42,7 @@ class FeatureExtraction {
      */
     void ExtractFromSector(const CloudPtr& pc_in, std::vector<IdAndValue>& cloud_curvature, CloudPtr& pc_out_edge,
                            CloudPtr& pc_out_surf);
+    void ExtractFromSurf(const CloudPtr& pc_in_surf, CloudPtr& pc_out_groud);
 
    private:
 };

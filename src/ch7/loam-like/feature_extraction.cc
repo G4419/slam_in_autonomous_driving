@@ -4,6 +4,14 @@
 #include "ch7/loam-like/feature_extraction.h"
 #include <glog/logging.h>
 
+#include <omp.h>
+
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
+#include <common/point_cloud_utils.h>
+
 namespace sad {
 
 void FeatureExtraction::Extract(FullCloudPtr pc_in, CloudPtr pc_out_edge, CloudPtr pc_out_surf) {
@@ -32,29 +40,56 @@ void FeatureExtraction::Extract(FullCloudPtr pc_in, CloudPtr pc_out_edge, CloudP
 
         std::vector<IdAndValue> cloud_curvature;  // 每条线对应的曲率
         int total_points = scans_in_each_line[i]->points.size() - 10;
+
+        // omp 并行加速
+        cloud_curvature.resize(total_points);
+        #pragma omp parallel for
         for (int j = 5; j < (int)scans_in_each_line[i]->points.size() - 5; j++) {
-            // 两头留一定余量，采样周围10个点取平均值
+        // 两头留一定余量，采样周围10个点取平均值
             double diffX = scans_in_each_line[i]->points[j - 5].x + scans_in_each_line[i]->points[j - 4].x +
-                           scans_in_each_line[i]->points[j - 3].x + scans_in_each_line[i]->points[j - 2].x +
-                           scans_in_each_line[i]->points[j - 1].x - 10 * scans_in_each_line[i]->points[j].x +
-                           scans_in_each_line[i]->points[j + 1].x + scans_in_each_line[i]->points[j + 2].x +
-                           scans_in_each_line[i]->points[j + 3].x + scans_in_each_line[i]->points[j + 4].x +
-                           scans_in_each_line[i]->points[j + 5].x;
+                            scans_in_each_line[i]->points[j - 3].x + scans_in_each_line[i]->points[j - 2].x +
+                            scans_in_each_line[i]->points[j - 1].x - 10 * scans_in_each_line[i]->points[j].x +
+                            scans_in_each_line[i]->points[j + 1].x + scans_in_each_line[i]->points[j + 2].x +
+                            scans_in_each_line[i]->points[j + 3].x + scans_in_each_line[i]->points[j + 4].x +
+                            scans_in_each_line[i]->points[j + 5].x;
             double diffY = scans_in_each_line[i]->points[j - 5].y + scans_in_each_line[i]->points[j - 4].y +
-                           scans_in_each_line[i]->points[j - 3].y + scans_in_each_line[i]->points[j - 2].y +
-                           scans_in_each_line[i]->points[j - 1].y - 10 * scans_in_each_line[i]->points[j].y +
-                           scans_in_each_line[i]->points[j + 1].y + scans_in_each_line[i]->points[j + 2].y +
-                           scans_in_each_line[i]->points[j + 3].y + scans_in_each_line[i]->points[j + 4].y +
-                           scans_in_each_line[i]->points[j + 5].y;
+                            scans_in_each_line[i]->points[j - 3].y + scans_in_each_line[i]->points[j - 2].y +
+                            scans_in_each_line[i]->points[j - 1].y - 10 * scans_in_each_line[i]->points[j].y +
+                            scans_in_each_line[i]->points[j + 1].y + scans_in_each_line[i]->points[j + 2].y +
+                            scans_in_each_line[i]->points[j + 3].y + scans_in_each_line[i]->points[j + 4].y +
+                            scans_in_each_line[i]->points[j + 5].y;
             double diffZ = scans_in_each_line[i]->points[j - 5].z + scans_in_each_line[i]->points[j - 4].z +
-                           scans_in_each_line[i]->points[j - 3].z + scans_in_each_line[i]->points[j - 2].z +
-                           scans_in_each_line[i]->points[j - 1].z - 10 * scans_in_each_line[i]->points[j].z +
-                           scans_in_each_line[i]->points[j + 1].z + scans_in_each_line[i]->points[j + 2].z +
-                           scans_in_each_line[i]->points[j + 3].z + scans_in_each_line[i]->points[j + 4].z +
-                           scans_in_each_line[i]->points[j + 5].z;
+                            scans_in_each_line[i]->points[j - 3].z + scans_in_each_line[i]->points[j - 2].z +
+                            scans_in_each_line[i]->points[j - 1].z - 10 * scans_in_each_line[i]->points[j].z +
+                            scans_in_each_line[i]->points[j + 1].z + scans_in_each_line[i]->points[j + 2].z +
+                            scans_in_each_line[i]->points[j + 3].z + scans_in_each_line[i]->points[j + 4].z +
+                            scans_in_each_line[i]->points[j + 5].z;
             IdAndValue distance(j, diffX * diffX + diffY * diffY + diffZ * diffZ);
-            cloud_curvature.push_back(distance);
+            cloud_curvature[j-5] = distance;
         }
+        // for (int j = 5; j < (int)scans_in_each_line[i]->points.size() - 5; j++) {
+        //     // 两头留一定余量，采样周围10个点取平均值
+        //     double diffX = scans_in_each_line[i]->points[j - 5].x + scans_in_each_line[i]->points[j - 4].x +
+        //                    scans_in_each_line[i]->points[j - 3].x + scans_in_each_line[i]->points[j - 2].x +
+        //                    scans_in_each_line[i]->points[j - 1].x - 10 * scans_in_each_line[i]->points[j].x +
+        //                    scans_in_each_line[i]->points[j + 1].x + scans_in_each_line[i]->points[j + 2].x +
+        //                    scans_in_each_line[i]->points[j + 3].x + scans_in_each_line[i]->points[j + 4].x +
+        //                    scans_in_each_line[i]->points[j + 5].x;
+        //     double diffY = scans_in_each_line[i]->points[j - 5].y + scans_in_each_line[i]->points[j - 4].y +
+        //                    scans_in_each_line[i]->points[j - 3].y + scans_in_each_line[i]->points[j - 2].y +
+        //                    scans_in_each_line[i]->points[j - 1].y - 10 * scans_in_each_line[i]->points[j].y +
+        //                    scans_in_each_line[i]->points[j + 1].y + scans_in_each_line[i]->points[j + 2].y +
+        //                    scans_in_each_line[i]->points[j + 3].y + scans_in_each_line[i]->points[j + 4].y +
+        //                    scans_in_each_line[i]->points[j + 5].y;
+        //     double diffZ = scans_in_each_line[i]->points[j - 5].z + scans_in_each_line[i]->points[j - 4].z +
+        //                    scans_in_each_line[i]->points[j - 3].z + scans_in_each_line[i]->points[j - 2].z +
+        //                    scans_in_each_line[i]->points[j - 1].z - 10 * scans_in_each_line[i]->points[j].z +
+        //                    scans_in_each_line[i]->points[j + 1].z + scans_in_each_line[i]->points[j + 2].z +
+        //                    scans_in_each_line[i]->points[j + 3].z + scans_in_each_line[i]->points[j + 4].z +
+        //                    scans_in_each_line[i]->points[j + 5].z;
+        //     IdAndValue distance(j, diffX * diffX + diffY * diffY + diffZ * diffZ);
+        //     cloud_curvature.push_back(distance);
+        // }
 
         // 对每个区间选取特征，把360度分为6个区间
         for (int j = 0; j < 6; j++) {
@@ -63,8 +98,7 @@ void FeatureExtraction::Extract(FullCloudPtr pc_in, CloudPtr pc_out_edge, CloudP
             int sector_end = sector_length * (j + 1) - 1;
             if (j == 5) {
                 sector_end = total_points - 1;
-            }
-
+            };
             std::vector<IdAndValue> sub_cloud_curvature(cloud_curvature.begin() + sector_start,
                                                         cloud_curvature.begin() + sector_end);
 
@@ -84,6 +118,8 @@ void FeatureExtraction::ExtractFromSector(const CloudPtr &pc_in, std::vector<IdA
 
     /// 按照曲率最大的开始搜，选取曲率最大的角点
     std::vector<int> picked_points;  // 标记被选中的角点，角点附近的点都不会被选取
+    //由于要取最大的n个角点，所以不能并行
+    // #pragma omp parallel for
     for (int i = cloud_curvature.size() - 1; i >= 0; i--) {
         int ind = cloud_curvature[i].id_;
         if (std::find(picked_points.begin(), picked_points.end(), ind) == picked_points.end()) {
@@ -123,12 +159,44 @@ void FeatureExtraction::ExtractFromSector(const CloudPtr &pc_in, std::vector<IdA
     }
 
     /// 选取曲率较小的平面点
+    #pragma omp parallel for
     for (int i = 0; i <= (int)cloud_curvature.size() - 1; i++) {
         int ind = cloud_curvature[i].id_;
         if (std::find(picked_points.begin(), picked_points.end(), ind) == picked_points.end()) {
             pc_out_surf->push_back(pc_in->points[ind]);
         }
     }
+}
+
+
+//另一种提取地面点的方式：借鉴legoloam，判断第i条线和第i+1条线的同一个索引点的夹角，如果小于10度，则认为是地面点
+
+//利用ransac从surf点里提取地面点
+void FeatureExtraction::ExtractFromSurf(const CloudPtr& pc_in_surf, CloudPtr& pc_out_groud){
+    //  pcl::PointCloud<pcl::PointXYZI>::Ptr ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    // pcl::PointCloud<pcl::PointXYZ>::Ptr ptr = pc_in_surf;
+    pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
+    pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+
+    // 创建一个Sample Consensus模型，并设置模型类型为线模型
+    pcl::SACSegmentation<sad::PointType> seg;
+    seg.setOptimizeCoefficients(true);
+    seg.setModelType(pcl::SACMODEL_PLANE);
+    seg.setMethodType(pcl::SAC_RANSAC);
+    seg.setDistanceThreshold(0.15);  // 设置RANSAC算法的距离阈值
+    seg.setMaxIterations(1000);
+    seg.setInputCloud(pc_in_surf);
+    seg.segment(*inliers, *coefficients);
+
+    
+    pcl::ExtractIndices<sad::PointType> extract;
+    extract.setInputCloud(pc_in_surf);
+    extract.setIndices(inliers);
+    extract.setNegative(false);  
+    extract.filter(*pc_out_groud);
+
+    // sad::SaveCloudToFile("./data/ch7/groud.pcd", *pc_out_groud);
+
 }
 
 }  // namespace sad

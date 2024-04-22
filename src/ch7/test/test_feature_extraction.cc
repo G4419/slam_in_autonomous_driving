@@ -13,6 +13,7 @@
 
 /// 这里需要vlp16的数据，用wxb的
 DEFINE_string(bag_path, "./dataset/sad/wxb/test1.bag", "path to wxb bag");
+// DEFINE_bool(extrct_groud, false, "extrct groud points");
 
 int main(int argc, char** argv) {
     google::InitGoogleLogging(argv[0]);
@@ -29,14 +30,20 @@ int main(int argc, char** argv) {
     bag_io
         .AddVelodyneHandle("/velodyne_packets_1",
                            [&](sad::FullCloudPtr cloud) -> bool {
-                               sad::CloudPtr pcd_corner(new sad::PointCloudType), pcd_surf(new sad::PointCloudType);
+                               sad::CloudPtr pcd_corner(new sad::PointCloudType), pcd_surf(new sad::PointCloudType),
+                                pcd_groud(new sad::PointCloudType);
+
                                sad::common::Timer::Evaluate(
                                    [&]() { feature_extraction.Extract(cloud, pcd_corner, pcd_surf); },
                                    "Feature Extraction");
+                                sad::common::Timer::Evaluate(
+                                   [&]() { feature_extraction.ExtractFromSurf(pcd_surf, pcd_groud); },
+                                   "Extract Ground From Surf");
                                LOG(INFO) << "original pts:" << cloud->size() << ", corners: " << pcd_corner->size()
-                                         << ", surf: " << pcd_surf->size();
+                                         << ", surf: " << pcd_surf->size() << ", ground: " << pcd_groud->size();
                                sad::SaveCloudToFile("./data/ch7/corner.pcd", *pcd_corner);
                                sad::SaveCloudToFile("./data/ch7/surf.pcd", *pcd_surf);
+                               sad::SaveCloudToFile("./data/ch7/ground.pcd", *pcd_groud);
                                return true;
                            })
         .Go();

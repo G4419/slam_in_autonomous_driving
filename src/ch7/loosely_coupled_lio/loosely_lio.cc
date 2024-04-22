@@ -21,9 +21,14 @@ bool LooselyLIO::Init(const std::string &config_yaml) {
     }
 
     /// 初始化NDT LO的参数
-    sad::IncrementalNDTLO::Options indt_options;
-    indt_options.display_realtime_cloud_ = false;  // 这个程序自己有UI，不用PCL中的
-    inc_ndt_lo_ = std::make_shared<sad::IncrementalNDTLO>(indt_options);
+    // sad::IncrementalNDTLO::Options indt_options;
+    // indt_options.display_realtime_cloud_ = false;  // 这个程序自己有UI，不用PCL中的
+    // inc_ndt_lo_ = std::make_shared<sad::IncrementalNDTLO>(indt_options);
+
+    //初始化Icp3d LO的参数
+    sad::Icp3d::Options indt_options;
+    indt_options.use_initial_translation_ = true;
+    icp_lo = std::make_shared<sad::Icp3d>(indt_options);
 
     /// 初始化UI
     if (options_.with_ui_) {
@@ -148,16 +153,38 @@ void LooselyLIO::Align() {
     voxel.filter(*current_scan_filter);
 
     /// 处理首帧雷达数据
+    // if (flg_first_scan_) {
+    //     SE3 pose;
+    //     inc_ndt_lo_->AddCloud(current_scan_filter, pose);
+    //     flg_first_scan_ = false;
+    //     return;
+    // }
+    //icp_3d匹配，未完成
     if (flg_first_scan_) {
         SE3 pose;
-        inc_ndt_lo_->AddCloud(current_scan_filter, pose);
+        // local_map_ = current_scan_filter;
+        icp_lo->SetTarget(current_scan_filter);
+        //
+        // inc_ndt_lo_->AddCloud(current_scan_filter, pose);
         flg_first_scan_ = false;
         return;
     }
 
+
     /// 从EKF中获取预测pose，放入LO，获取LO位姿，最后合入EKF
     SE3 pose_predict = eskf_.GetNominalSE3();
-    inc_ndt_lo_->AddCloud(current_scan_filter, pose_predict, true);
+
+    CloudPtr scan_world(new PointCloudType);
+    pcl::transformPointCloud(*current_scan_filter, *scan_world, pose_predict.matrix().cast<float>());
+
+    icp_lo->SetSource(scan_world);
+    //icp point to plane match
+    icp_lo->AlignP2Plane(pose_predict);
+
+    // *local_map_  =  *local_map_ + *scan_world;
+    icp_lo->SetTarget(scan_world);
+
+    // inc_ndt_lo_->AddCloud(current_scan_filter, pose_predict, true);
     pose_of_lo_ = pose_predict;
     eskf_.ObserveSE3(pose_of_lo_, 1e-2, 1e-2);
 
